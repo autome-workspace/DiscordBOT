@@ -16,11 +16,7 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- User-defined Settings ---
-TOKEN = ""
-ALLOWED_ROLE_ID = 1400428622673875005#1394825200159297566
-REVIEW_LOG_FILE = "review_results.csv"
-BUDGET_FILE = "budgets.json"
-CHANNEL_FILE = "channels.json" # ★ 追加: チャンネル登録ファイル
+
 
 
 
@@ -44,8 +40,6 @@ CHANNEL_FILE = "channels.json"
 # 形式: {guild_id: {"budgets": {...}, "channels": set(...)}}
 guild_data = {}
 message_data_map = {}
-budgets = {}
-registered_channel_ids = set() # ★ 追加: 登録チャンネルIDを保持するセット
 
 # --- Helper Functions for Server-Specific Data ---
 
@@ -226,8 +220,9 @@ class MultiItemRequestView(ui.View):
         # ★ 変更点: 最終申請メッセージにリアクションの代わりに承認Viewを付ける
         total_amount = sum(item['amount'] for item in self.items)
 
-        if total_amount > budgets.get(self.selected_budget, 0):
-            await interaction.response.send_message(f"⚠️ **エラー:** 予算「{self.selected_budget}」が不足しています。(残高: ¥{budgets[self.selected_budget]:,})", ephemeral=True)
+        current_budgets = guild_data[self.guild_id]["budgets"]
+        if total_amount > current_budgets.get(self.selected_budget, 0):
+            await interaction.response.send_message(f"⚠️ **エラー:** 予算「{self.selected_budget}」が不足しています。(残高: ¥{current_budgets.get(self.selected_budget, 0):,})", ephemeral=True)
             return
         
         final_embed = discord.Embed(title="購入申請", color=discord.Color.gold())
@@ -359,7 +354,7 @@ class ApprovalView(ui.View):
 
         footer_text = f"審査者: {approver.display_name}"
         if approved_amount > 0:
-            footer_text += f"\n「{self.budget_name}」から ¥{approved_amount:,} を支出 (残高: ¥{budgets[self.budget_name]:,})"
+            footer_text += f"\n「{self.budget_name}」から ¥{approved_amount:,} を支出 (残高: ¥{current_budgets[self.budget_name]:,})"
         final_embed.set_footer(text=footer_text)
 
         # ログを保存
@@ -438,66 +433,78 @@ async def register_channel(ctx, channel: discord.TextChannel = None):
 async def unregister_channel(ctx, channel: discord.TextChannel = None):
     """チャンネルの登録を解除します。"""
     target_channel = channel or ctx.channel
-    load_channels()
+    guild_id = ctx.guild.id
 
-    if target_channel.id not in registered_channel_ids:
+    load_guild_data(guild_id)
+    if target_channel.id not in guild_data[guild_id]["channels"]:
         await ctx.send(f"ℹ️ チャンネル <#{target_channel.id}> は登録されていません。", ephemeral=True)
         return
 
-    registered_channel_ids.discard(target_channel.id)
-    save_channels()
+    guild_data[guild_id]["channels"].discard(target_channel.id)
+    save_channels(guild_id)
     await ctx.send(f"✅ チャンネル <#{target_channel.id}> の登録を解除しました。")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def list_channels(ctx):
     """登録されているチャンネルの一覧を表示します。"""
-    load_channels()
-    if not registered_channel_ids:
-        await ctx.send("現在、登録されているチャンネルはありません。")
+    guild_id = ctx.guild.id
+    load_guild_data(guild_id)
+    
+    registered_channels = guild_data[guild_id]["channels"]
+    if not registered_channels:
+        await ctx.send("現在、このサーバーで登録されているチャンネルはありません。")
         return
     
     embed = discord.Embed(title="📢 登録済みチャンネル一覧", color=discord.Color.blue())
-    # <#ID> という形式でチャンネルへのリンクを作成
-    channel_links = [f"<#{channel_id}>" for channel_id in registered_channel_ids]
+    channel_links = [f"<#{channel_id}>" for channel_id in registered_channels]
     embed.description = "\n".join(channel_links)
     await ctx.send(embed=embed)
 
 # --- Bot Events ---
 @bot.event
 async def on_ready():
-    # ★ 修正箇所
-    global registered_channel_ids # global宣言を追加して、グローバル変数を参照することを明示
     print(f"✅ Botログイン成功: {bot.user}")
-    load_budgets()
-    load_channels() # ★ 追加: チャンネルリストをロード
-    print(f"📢 登録済みチャンネルをロードしました: {registered_channel_ids or '（なし）'}") # これで正しく表示される
-    if not os.path.exists(REVIEW_LOG_FILE):
-        with open(REVIEW_LOG_FILE, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["申請者", "購入物", "リンク", "金額", "結果", "承認者", "予算項目"])
+    
+    ### ▼▼▼ 変更点 ▼▼▼
+    # 起動時に所属している全サーバーのデータディレクトリを確認
+    os.makedirs(DATA_DIR, exist_ok=True)
+    print("--- 所属サーバーのデータチェック ---")
+    for guild in bot.guilds:
+        print(f"-> サーバー: {guild.name} ({guild.id})")
+        load_guild_data(guild.id)
+    print("---------------------------------")
+    print("📢 全サーバーのデータをロードしました。")
+    # 永続Viewを登録する場合は、guild_idをどう扱うか再設計が必要。
+    # 今回はタイムアウトありのViewなので、この処理は不要。
+    # bot.add_view(...)
 
 @bot.command()
 async def request(ctx):
-    load_budgets()
-    if not budgets:
-        await ctx.send("現在、登録されている予算はありません。")
+    guild_id = ctx.guild.id
+    load_guild_data(guild_id)
+    if not guild_data[guild_id]["budgets"]:
+        await ctx.send("現在、このサーバーで登録されている予算はありません。")
         return
-    view = MultiItemRequestView(author=ctx.author)
+    # Viewに guild_id を渡す
+    view = MultiItemRequestView(author=ctx.author, guild_id=guild_id)
     embed = view.create_embed()
     await ctx.send(embed=embed, view=view)
     
 # (他のコマンド !budget, !add_budget, !send は変更なし)
 @bot.command()
 async def budget(ctx):
-    """現在の全予算の状況を表示する"""
-    load_budgets()
-    if not budgets:
-        await ctx.send("現在、登録されている予算はありません。")
+    """"現在の全予算の状況を表示する"""
+    guild_id = ctx.guild.id
+    load_guild_data(guild_id)
+    
+    current_budgets = guild_data[guild_id]["budgets"]
+    if not current_budgets:
+        await ctx.send("現在、このサーバーで登録されている予算はありません。")
         return
     
     embed = discord.Embed(title="💰 現在の予算状況", color=discord.Color.gold())
-    for name, amount in budgets.items():
+    for name, amount in current_budgets.items():
         embed.add_field(name=name, value=f"¥{amount:,}", inline=False)
     
     await ctx.send(embed=embed)
@@ -506,11 +513,15 @@ async def budget(ctx):
 @commands.has_role(ALLOWED_ROLE_ID)
 async def add_budget(ctx, name: str, amount: int):
     """新しい予算項目を追加、または既存の予算を補充する"""
-    load_budgets()
-    budgets[name] = budgets.get(name, 0) + amount
-    save_budgets()
-    await ctx.send(f"✅ 予算「{name}」に ¥{amount:,} を追加しました。現在の残高: ¥{budgets[name]:,}")
+    guild_id = ctx.guild.id
+    load_guild_data(guild_id)
 
+    current_budgets = guild_data[guild_id]["budgets"]
+    current_budgets[name] = current_budgets.get(name, 0) + amount
+    save_budgets(guild_id)
+    await ctx.send(f"✅ 予算「{name}」に ¥{amount:,} を追加しました。現在の残高: ¥{current_budgets[name]:,}")
+
+    
 @add_budget.error
 async def add_budget_error(ctx, error):
     if isinstance(error, commands.MissingRole):
@@ -521,17 +532,21 @@ async def add_budget_error(ctx, error):
 @bot.command()
 async def send(ctx, applicant: str, item: str, link: str, amount: int, budget_name: str):
     """【引数指定用】購入申請を作成する（予算項目付き）"""
-    load_budgets()
+    ### ▼▼▼ 修正 ▼▼▼
+    guild_id = ctx.guild.id
+    load_guild_data(guild_id)
+    current_budgets = guild_data[guild_id]["budgets"]
     
-    if budget_name not in budgets:
+    if budget_name not in current_budgets:
         await ctx.send(f"⚠️ **エラー:** 予算項目「{budget_name}」は存在しません。")
         return
         
-    if amount > budgets[budget_name]:
-        await ctx.send(f"⚠️ **エラー:** 予算「{budget_name}」が不足しています。(残高: ¥{budgets[budget_name]:,})")
+    if amount > current_budgets[budget_name]:
+        await ctx.send(f"⚠️ **エラー:** 予算「{budget_name}」が不足しています。(残高: ¥{current_budgets[budget_name]:,})")
         return
+    ### ▲▲▲ 修正 ▲▲▲
 
-    embed = discord.Embed(title="購入申請", color=discord.Color.blue())
+    embed = discord.Embed(title="購入申請", color=discord.Color.gold())
     embed.add_field(name="申請者", value=applicant, inline=False)
     embed.add_field(name="購入物", value=item, inline=False)
     embed.add_field(name="リンク", value=link, inline=False)
@@ -539,28 +554,22 @@ async def send(ctx, applicant: str, item: str, link: str, amount: int, budget_na
     embed.add_field(name="🧾 予算項目", value=budget_name, inline=True)
     embed.set_footer(text="ステータス: 審査中")
 
-    message = await ctx.send(embed=embed)
-    await message.add_reaction("✅")
-    await message.add_reaction("❌")
+    # このコマンドはUIではなくリアクションベースのため、
+    # 承認Viewを呼び出すように変更するか、このままにするか選択できます。
+    # ここでは、UIベースの!requestがメインと想定し、リアクション方式のままにしておきます。
+    
+    # 承認Viewを使いたい場合は、以下の部分を `!request` と同様に書き換えます。
+    items = [{"name": item, "link": link, "amount": amount}]
+    approval_view = ApprovalView(
+        author=ctx.author, # 本来は指定されたapplicantだが、Userオブジェクトではないためctx.authorで代用
+        items=items,
+        budget_name=budget_name,
+        guild_id=guild_id
+    )
+    await ctx.send(embed=embed, view=approval_view)
 
-    message_data_map[message.id] = {
-        "申請者": applicant,
-        "購入物": item,
-        "リンク": link,
-        "金額": amount,
-        "予算項目": budget_name,
-        "処理済み": False
-    }
 
 
-def save_review_result_partial(applicant, budget_name, approver, approved_items, rejected_items):
-    """個別審査の結果をCSVに記録する"""
-    with open(REVIEW_LOG_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        for item in approved_items:
-            writer.writerow([applicant, item["name"], item["link"], item["amount"], "承認", approver, budget_name])
-        for item in rejected_items:
-            writer.writerow([applicant, item["name"], item["link"], item["amount"], "却下", approver, budget_name])
 
 # --- Run the Bot ---
 if __name__ == "__main__":
