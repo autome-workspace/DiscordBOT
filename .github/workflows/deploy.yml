@@ -29,6 +29,6 @@ jobs:
           screen -S kaikei-bot -X quit || true
 
           # 3. 新しいデタッチされたscreenセッションを開始し、その中でスクリプトを実行
-          screen -dmS kaikei-bot python3 budgetBOT.py
+          screen -dmS kaikei-bot bash -c 'cd cd /home/marc/DiscordBOT/budgetBOT && python3 budgetBOT.py'
 
           echo "Application is running in a screen session."
