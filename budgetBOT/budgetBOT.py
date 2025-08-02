@@ -22,6 +22,8 @@ REVIEW_LOG_FILE = "review_results.csv"
 BUDGET_FILE = "budgets.json"
 CHANNEL_FILE = "channels.json" # ★ 追加: チャンネル登録ファイル
 
+
+
 # --- Load Configuration ---
 with open("config.json", "r", encoding="utf-8") as config_file:
     config = json.load(config_file)
@@ -29,39 +31,93 @@ with open("config.json", "r", encoding="utf-8") as config_file:
 TOKEN = config["TOKEN"]
 ALLOWED_ROLE_ID = config["ALLOWED_ROLE_ID"]
 
+### ▼▼▼ 変更点 ▼▼▼
+# ファイル名を定数化し、データディレクトリを設定
+DATA_DIR = "data"
+REVIEW_LOG_FILE = "review_results.csv"
+BUDGET_FILE = "budgets.json"
+CHANNEL_FILE = "channels.json"
+
 
 # In-memory storage
+# サーバーごとのデータを保持する辞書
+# 形式: {guild_id: {"budgets": {...}, "channels": set(...)}}
+guild_data = {}
 message_data_map = {}
 budgets = {}
 registered_channel_ids = set() # ★ 追加: 登録チャンネルIDを保持するセット
 
-# --- Budget Helper Functions ---
-def load_budgets():
-    global budgets
-    try:
-        with open(BUDGET_FILE, "r", encoding="utf-8") as f:
-            budgets = json.load(f)
-    except FileNotFoundError:
-        budgets = {}
+# --- Helper Functions for Server-Specific Data ---
 
-def save_budgets():
-    with open(BUDGET_FILE, "w", encoding="utf-8") as f:
-        json.dump(budgets, f, indent=4, ensure_ascii=False)
-# ★ 追加: チャンネル登録用のヘルパー関数
-def load_channels():
-    """channels.jsonから登録チャンネルIDを読み込む"""
-    global registered_channel_ids
+def get_guild_data_path(guild_id: int) -> str:
+    """サーバーIDに対応するデータディレクトリのパスを返し、なければ作成する"""
+    path = os.path.join(DATA_DIR, str(guild_id))
+    os.makedirs(path, exist_ok=True)
+    return path
+
+def load_guild_data(guild_id: int):
+    """指定されたサーバーのデータをファイルから読み込み、メモリに格納する"""
+    if guild_id in guild_data:
+        return # 既にロード済みなら何もしない
+
+    # メモリ上にサーバー用のデータ領域を初期化
+    guild_data[guild_id] = {
+        "budgets": {},
+        "channels": set()
+    }
+    
+    guild_path = get_guild_data_path(guild_id)
+    budget_file_path = os.path.join(guild_path, BUDGET_FILE)
+    channel_file_path = os.path.join(guild_path, CHANNEL_FILE)
+
+    # 予算データの読み込み
     try:
-        with open(CHANNEL_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            registered_channel_ids = set(data.get("registered_channels", []))
+        with open(budget_file_path, "r", encoding="utf-8") as f:
+            guild_data[guild_id]["budgets"] = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        registered_channel_ids = set()
+        pass # ファイルがなければ空のまま
 
-def save_channels():
-    """現在の登録チャンネルIDをchannels.jsonに保存する"""
-    with open(CHANNEL_FILE, "w", encoding="utf-8") as f:
-        json.dump({"registered_channels": list(registered_channel_ids)}, f, indent=4)
+    # チャンネルデータの読み込み
+    try:
+        with open(channel_file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            guild_data[guild_id]["channels"] = set(data.get("registered_channels", []))
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+def save_budgets(guild_id: int):
+    """指定されたサーバーの予算データをファイルに保存する"""
+    path = get_guild_data_path(guild_id)
+    file_path = os.path.join(path, BUDGET_FILE)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(guild_data[guild_id]["budgets"], f, indent=4, ensure_ascii=False)
+
+def save_channels(guild_id: int):
+    """指定されたサーバーのチャンネル登録情報をファイルに保存する"""
+    path = get_guild_data_path(guild_id)
+    file_path = os.path.join(path, CHANNEL_FILE)
+    with open(file_path, "w", encoding="utf-8") as f:
+        # setは直接JSON化できないためlistに変換
+        data_to_save = {"registered_channels": list(guild_data[guild_id]["channels"])}
+        json.dump(data_to_save, f, indent=4)
+
+def save_review_result_partial(guild_id: int, applicant, budget_name, approver, approved_items, rejected_items):
+    """個別審査の結果をサーバーごとのCSVに記録する"""
+    guild_path = get_guild_data_path(guild_id)
+    log_file_path = os.path.join(guild_path, REVIEW_LOG_FILE)
+    
+    # ファイルがなければヘッダーを書き込む
+    file_exists = os.path.exists(log_file_path)
+    
+    with open(log_file_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["申請者", "購入物", "リンク", "金額", "結果", "承認者", "予算項目"])
+        
+        for item in approved_items:
+            writer.writerow([applicant, item["name"], item["link"], item["amount"], "承認", approver, budget_name])
+        for item in rejected_items:
+            writer.writerow([applicant, item["name"], item["link"], item["amount"], "却下", approver, budget_name])
 
 # --- UI Classes for Multi-Item Request ---
 class AddItemModal(ui.Modal, title="品物をリストに追加"):
@@ -91,19 +147,22 @@ class AddItemModal(ui.Modal, title="品物をリストに追加"):
 
 # (MultiItemRequestViewは承認UIを呼び出すように変更)
 class MultiItemRequestView(ui.View):
-    def __init__(self, author: discord.User):
+    def __init__(self, author: discord.User, guild_id: int):
         super().__init__(timeout=600)
         self.author = author
+        self.guild_id = guild_id # サーバーIDを保持
         self.items = []
         self.selected_budget = None
         self.update_budget_options()
     
     def update_budget_options(self):
-        # ... (変更なし)
-        load_budgets()
+        # サーバー固有のデータを読み込む
+        load_guild_data(self.guild_id)
+        current_budgets = guild_data[self.guild_id]["budgets"]
+        
         options = [
             discord.SelectOption(label=name, description=f"残高: ¥{amount:,}")
-            for name, amount in budgets.items()
+            for name, amount in current_budgets.items()
         ]
         if not options:
             self.children[1].disabled = True
@@ -188,10 +247,12 @@ class MultiItemRequestView(ui.View):
         await interaction.message.delete()
         
         # 承認UIを作成してメッセージを送信
+        # 承認UIに guild_id を渡す
         approval_view = ApprovalView(
             author=self.author,
             items=self.items,
-            budget_name=self.selected_budget
+            budget_name=self.selected_budget,
+            guild_id=self.guild_id # guild_id を渡す
         )
         approval_message = await interaction.channel.send(embed=final_embed, view=approval_view)
 
@@ -246,11 +307,12 @@ class PartialApprovalView(ui.View):
 # ★★★ 修正箇所 ★★★
 # 承認者が操作する最初のUI
 class ApprovalView(ui.View):
-    def __init__(self, author: discord.User, items: list, budget_name: str):
-        super().__init__(timeout=None) # タイムアウトなし
+    def __init__(self, author: discord.User, items: list, budget_name: str, guild_id: int):
+        super().__init__(timeout=None) # 永続化する場合は bot.add_view() での工夫が必要
         self.author = author
         self.items = items
         self.budget_name = budget_name
+        self.guild_id = guild_id # サーバーIDを保持
         self.total_amount = sum(item['amount'] for item in items)
     
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -267,16 +329,18 @@ class ApprovalView(ui.View):
         approver = interaction.user
         approved_amount = sum(item['amount'] for item in approved_items)
 
-        load_budgets()
-        if approved_amount > budgets.get(self.budget_name, 0):
-            # ephemeral=True にすることで、本人にのみ見えるメッセージとして送信
+         # サーバー固有のデータを操作
+        load_guild_data(self.guild_id)
+        current_budgets = guild_data[self.guild_id]["budgets"]
+
+        if approved_amount > current_budgets.get(self.budget_name, 0):
             await interaction.response.send_message(f"⚠️ **エラー:** 承認額 (¥{approved_amount:,}) が予算「{self.budget_name}」の残高を超えています。", ephemeral=True)
             return
 
         # 予算引き落とし
         if approved_amount > 0:
-            budgets[self.budget_name] -= approved_amount
-            save_budgets()
+            current_budgets[self.budget_name] -= approved_amount
+            save_budgets(self.guild_id) # guild_id を指定して保存
         
         # 最終結果のEmbedを作成
         final_embed = discord.Embed(title="審査結果", color=discord.Color.dark_grey())
@@ -299,7 +363,8 @@ class ApprovalView(ui.View):
         final_embed.set_footer(text=footer_text)
 
         # ログを保存
-        save_review_result_partial(self.author.display_name, self.budget_name, approver.display_name, approved_items, rejected_items)
+        # ログを保存する際も guild_id を渡す
+        save_review_result_partial(self.guild_id, self.author.display_name, self.budget_name, approver.display_name, approved_items, rejected_items)
         
         # 元のメッセージを更新し、UIを無効化
         await interaction.response.edit_message(embed=final_embed, view=None)
@@ -325,35 +390,24 @@ class ApprovalView(ui.View):
 # ★★★ Bot全体に適用するチャンネルチェック（デバッグ版） ★★★
 @bot.check
 async def is_in_registered_channel(ctx: commands.Context):
-    # --- ▼ここからデバッグ用のprint文▼ ---
-    print("\n--- チャンネルチェック実行 ---")
-    if not ctx.command:
-        print("-> コマンドが見つかりません。チェックを中断します。")
-        return False # コマンドがない場合は基本的にFalse
+    """コマンドが、そのサーバーで登録されたチャンネルでのみ実行されるようにチェックする"""
+    if not ctx.guild:
+        return False # DMなど、サーバー以外からのコマンドは弾く
 
-    print(f"コマンド: '{ctx.command.name}' in チャンネルID: {ctx.channel.id}")
-    print(f"メモリ上の登録済みチャンネルID: {registered_channel_ids or '（空です）'}")
-    # --- ▲ここまでデバッグ用のprint文▲ ---
+    # データを読み込む
+    load_guild_data(ctx.guild.id)
+    registered_channels = guild_data[ctx.guild.id]["channels"]
 
-    # 管理用コマンドはどこでも実行可能
+    # 管理用コマンドはどこでもOK
     management_commands = ["register_channel", "unregister_channel", "list_channels"]
-    if ctx.command.name in management_commands:
-        print("-> 管理コマンドのため、チェックを許可します。")
+    if ctx.command and ctx.command.name in management_commands:
         return True
     
-    # 登録チャンネルが1つもなければ、どこでも実行可能（初期設定用）
-    if not registered_channel_ids:
-        print("-> 登録チャンネルが空のため、チェックを許可します。")
+    # 登録チャンネルがなければどこでもOK (初期設定用)
+    if not registered_channels:
         return True
     
-    # 登録チャンネルリストに現在のチャンネルIDが含まれているかチェック
-    result = ctx.channel.id in registered_channel_ids
-    if result:
-        print(f"-> {ctx.channel.id} は登録済みです。チェックを許可します。")
-    else:
-        print(f"-> {ctx.channel.id} は未登録です。チェックを拒否します。")
-        
-    return result
+    return ctx.channel.id in registered_channels
 @bot.event
 async def on_command_error(ctx, error):
     # チャンネルチェックに失敗した場合は、エラーメッセージを表示せず沈黙する
@@ -368,14 +422,15 @@ async def on_command_error(ctx, error):
 async def register_channel(ctx, channel: discord.TextChannel = None):
     """Botが反応するチャンネルとして現在のチャンネルを登録します。"""
     target_channel = channel or ctx.channel
-    load_channels()
-    
-    if target_channel.id in registered_channel_ids:
+    guild_id = ctx.guild.id
+
+    load_guild_data(guild_id)
+    if target_channel.id in guild_data[guild_id]["channels"]:
         await ctx.send(f"✅ チャンネル <#{target_channel.id}> は既に登録されています。", ephemeral=True)
         return
 
-    registered_channel_ids.add(target_channel.id)
-    save_channels()
+    guild_data[guild_id]["channels"].add(target_channel.id)
+    save_channels(guild_id)
     await ctx.send(f"✅ チャンネル <#{target_channel.id}> を登録しました。")
 
 @bot.command()
