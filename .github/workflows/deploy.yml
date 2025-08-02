@@ -11,16 +11,13 @@ jobs:
 
     steps:
       - name: Deploy to Server
-        # ランナーはサーバー上で直接コマンドを実行する
         run: |
           echo "Starting deployment..."
           export PATH=$PATH:/home/marc/.nvm/versions/node/v22.18.0/bin/pm2
-          cd /home/marc/DiscordBOT  # ステップ1でクローンしたディレクトリ
+          cd /home/marc/DiscordBOT
           
-          # 1. 最新のコードを取得
           git pull origin main
           
-          # 2. (任意) Pythonの依存関係をインストール
           # python3 -m venv venv
           # source venv/bin/activate
           pip install -r /home/marc/DiscordBOT/budgetBOT/requirements.txt
@@ -28,8 +25,6 @@ jobs:
           cd /home/marc/DiscordBOT/budgetBOT
           
           pm2 restart kaikei-bot || pm2 start budgetBOT.py --name kaikei-bot --interpreter python3
-          
-          # (任意) サーバー再起動時にpm2のプロセスを復元する設定
-          # 初回に一度サーバーで pm2 startup を実行しておく必要があります
+        
           pm2 save
-          echo "Application is running in a screen session."
+          echo "Application is running in a pm2 session."
