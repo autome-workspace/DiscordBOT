@@ -26,9 +26,9 @@ jobs:
 
           cd /home/marc/DiscordBOT/budgetBOT
           
-          pm2 restart kaikei-bot || pm2 start budgetBOT.py --name kaikei-bot --interpreter python3
+          /home/marc/.nvm/versions/node/v22.18.0/bin/pm2 restart kaikei-bot || /home/marc/.nvm/versions/node/v22.18.0/bin/pm2 start budgetBOT.py --name kaikei-bot --interpreter python3
           
           # (任意) サーバー再起動時にpm2のプロセスを復元する設定
           # 初回に一度サーバーで pm2 startup を実行しておく必要があります
-          pm2 save
+          /home/marc/.nvm/versions/node/v22.18.0/bin/pm2 save
           echo "Application is running in a screen session."
