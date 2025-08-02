@@ -22,7 +22,7 @@ jobs:
           # 2. (任意) Pythonの依存関係をインストール
           # python3 -m venv venv
           # source venv/bin/activate
-          pip install -r requirements.txt
+          pip install -r /home/marc/DiscordBOT/budgetBOT/requirements.txt
 
           cd /home/marc/DiscordBOT/budgetBOT
           
