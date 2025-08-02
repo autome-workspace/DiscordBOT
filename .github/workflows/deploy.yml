@@ -26,9 +26,9 @@ jobs:
 
           cd /home/marc/DiscordBOT/budgetBOT
           
-          screen -S kaikei-bot -X quit || true
-
-          # 3. 新しいデタッチされたscreenセッションを開始し、その中でスクリプトを実行
-          screen -dmS kaikei-bot bash -c 'cd cd /home/marc/DiscordBOT/budgetBOT && python3 budgetBOT.py'
-
+          pm2 restart kaikei-bot || pm2 start budgetBOT.py --name kaikei-bot --interpreter python3
+          
+          # (任意) サーバー再起動時にpm2のプロセスを復元する設定
+          # 初回に一度サーバーで pm2 startup を実行しておく必要があります
+          pm2 save
           echo "Application is running in a screen session."
