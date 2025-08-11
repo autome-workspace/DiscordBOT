@@ -1,0 +1,58 @@
+{
+    "Cチーム": {
+        "settings": {
+            "name": "Cチーム",
+            "budget": 99300,
+            "role_id": 1394825200159297566,
+            "channel_id": 1395668396728782928
+        },
+        "requests": {
+            "656022488362385408": {
+                "142b8a27-d863-4971-a854-5846c2b9c0bc": {
+                    "request_id": "142b8a27-d863-4971-a854-5846c2b9c0bc",
+                    "applicant_id": 656022488362385408,
+                    "applicant_name": "syamei0",
+                    "status": "approved",
+                    "items": [
+                        {
+                            "name": "a",
+                            "link": "a",
+                            "amount": 200,
+                            "approval": true
+                        }
+                    ],
+                    "total_amount": 200,
+                    "approved_amount": 200,
+                    "timestamp": "2025-08-11T19:52:08.606112",
+                    "approver_id": 656022488362385408,
+                    "approver_name": "syamei0",
+                    "receipt": null,
+                    "collect": false,
+                    "refund": false
+                },
+                "5332773a-2846-4a10-8a05-b03e60e347fe": {
+                    "request_id": "5332773a-2846-4a10-8a05-b03e60e347fe",
+                    "applicant_id": 656022488362385408,
+                    "applicant_name": "syamei0",
+                    "status": "approved",
+                    "items": [
+                        {
+                            "name": "b",
+                            "link": "b",
+                            "amount": 500,
+                            "approval": true
+                        }
+                    ],
+                    "total_amount": 500,
+                    "approved_amount": 500,
+                    "timestamp": "2025-08-11T19:52:22.459198",
+                    "approver_id": 656022488362385408,
+                    "approver_name": "syamei0",
+                    "receipt": null,
+                    "collect": false,
+                    "refund": false
+                }
+            }
+        }
+    }
+}
