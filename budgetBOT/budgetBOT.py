@@ -19,19 +19,18 @@ with open("config.json", "r", encoding="utf-8") as config_file:
     config = json.load(config_file)
 
 TOKEN = config["TOKEN"]
-# ALLOWED_ROLE_ID = config["ALLOWED_ROLE_ID"] # サーバーごとの設定に移行するため不要に
+# ★ 変更点: config.jsonからの共通ロールID読み込みを維持
+ALLOWED_ROLE_ID = config.get("ALLOWED_ROLE_ID") 
 
-### ▼▼▼ 変更点 ▼▼▼
-# ファイル名を定数化し、データディレクトリと設定ファイル名を設定
+### ▼▼▼ ファイル設定 ▼▼▼
 DATA_DIR = "data"
 REVIEW_LOG_FILE = "review_results.csv"
 BUDGET_FILE = "budgets.json"
 CHANNEL_FILE = "channels.json"
-SETTINGS_FILE = "settings.json" # ★ 追加：ロールIDなどを保存するファイル
+SETTINGS_FILE = "settings.json" # ロールIDなどを保存するファイル
 
 # In-memory storage
-# サーバーごとのデータを保持する辞書
-# 形式: {guild_id: {"budgets": {...}, "channels": set(...), "accounting_role_id": int}}
+# 形式: {guild_id: {"budgets": {...}, "channels": set(...), "additional_roles": set(...)}}
 guild_data = {}
 
 # --- Helper Functions for Server-Specific Data ---
@@ -45,19 +44,19 @@ def get_guild_data_path(guild_id: int) -> str:
 def load_guild_data(guild_id: int):
     """指定されたサーバーのデータをファイルから読み込み、メモリに格納する"""
     if guild_id in guild_data:
-        return # 既にロード済みなら何もしない
+        return
 
     # メモリ上にサーバー用のデータ領域を初期化
     guild_data[guild_id] = {
         "budgets": {},
         "channels": set(),
-        "accounting_role_id": None # ★ 追加: 会計ロールIDの格納場所
+        "additional_roles": set() # ★ 変更点: 複数の追加ロールを保持
     }
     
     guild_path = get_guild_data_path(guild_id)
     budget_file_path = os.path.join(guild_path, BUDGET_FILE)
     channel_file_path = os.path.join(guild_path, CHANNEL_FILE)
-    settings_file_path = os.path.join(guild_path, SETTINGS_FILE) # ★ 追加
+    settings_file_path = os.path.join(guild_path, SETTINGS_FILE)
 
     # 予算データの読み込み
     try:
@@ -74,59 +73,75 @@ def load_guild_data(guild_id: int):
     except (FileNotFoundError, json.JSONDecodeError):
         pass
         
-    # ★ 追加: 設定データ（会計ロールID）の読み込み
+    # 設定データ（追加の会計ロールID）の読み込み
     try:
         with open(settings_file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            guild_data[guild_id]["accounting_role_id"] = data.get("accounting_role_id")
+            # ★ 変更点: listで保存されたものをsetに変換
+            guild_data[guild_id]["additional_roles"] = set(data.get("additional_role_ids", []))
     except (FileNotFoundError, json.JSONDecodeError):
         pass
 
 def save_budgets(guild_id: int):
-    """指定されたサーバーの予算データをファイルに保存する"""
     path = get_guild_data_path(guild_id)
     file_path = os.path.join(path, BUDGET_FILE)
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(guild_data[guild_id]["budgets"], f, indent=4, ensure_ascii=False)
 
 def save_channels(guild_id: int):
-    """指定されたサーバーのチャンネル登録情報をファイルに保存する"""
     path = get_guild_data_path(guild_id)
     file_path = os.path.join(path, CHANNEL_FILE)
     with open(file_path, "w", encoding="utf-8") as f:
         data_to_save = {"registered_channels": list(guild_data[guild_id]["channels"])}
         json.dump(data_to_save, f, indent=4)
 
-# ★ 追加: 設定データ（会計ロールID）を保存する関数
 def save_settings(guild_id: int):
-    """指定されたサーバーの設定データ（会計ロール等）をファイルに保存する"""
+    """サーバーの設定データ（追加ロール等）をファイルに保存する"""
     path = get_guild_data_path(guild_id)
     file_path = os.path.join(path, SETTINGS_FILE)
     data_to_save = {
-        "accounting_role_id": guild_data[guild_id].get("accounting_role_id")
+        # ★ 変更点: setは直接JSONにできないためlistに変換
+        "additional_role_ids": list(guild_data[guild_id].get("additional_roles", []))
     }
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data_to_save, f, indent=4)
 
 def save_review_result_partial(guild_id: int, applicant, budget_name, approver, approved_items, rejected_items):
-    """個別審査の結果をサーバーごとのCSVに記録する"""
     guild_path = get_guild_data_path(guild_id)
     log_file_path = os.path.join(guild_path, REVIEW_LOG_FILE)
-    
     file_exists = os.path.exists(log_file_path)
-    
     with open(log_file_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
             writer.writerow(["申請者", "購入物", "リンク", "金額", "結果", "承認者", "予算項目"])
-        
         for item in approved_items:
             writer.writerow([applicant, item["name"], item["link"], item["amount"], "承認", approver, budget_name])
         for item in rejected_items:
             writer.writerow([applicant, item["name"], item["link"], item["amount"], "却下", approver, budget_name])
 
-# --- UI Classes (AddItemModal, MultiItemRequestView, PartialApprovalView) ---
-# (UIクラスの前半は変更なしのため省略します)
+# --- Helper Function for Permission Check ---
+
+def has_accounting_role(member: discord.Member) -> bool:
+    """メンバーが会計関連のロールを持っているかチェックする"""
+    if not member.guild:
+        return False
+        
+    load_guild_data(member.guild.id)
+    server_roles = guild_data[member.guild.id].get("additional_roles", set())
+    
+    member_role_ids = {role.id for role in member.roles}
+    
+    # 共通ロールを持っているかチェック
+    if ALLOWED_ROLE_ID and ALLOWED_ROLE_ID in member_role_ids:
+        return True
+    
+    # サーバー固有の追加ロールを持っているかチェック
+    if not server_roles.isdisjoint(member_role_ids): # 積集合があればTrue
+        return True
+        
+    return False
+
+# --- UI Classes (AddItemModal, MultiItemRequestView, PartialApprovalViewは変更なし) ---
 class AddItemModal(ui.Modal, title="品物をリストに追加"):
     def __init__(self, parent_view):
         super().__init__()
@@ -194,13 +209,11 @@ class MultiItemRequestView(ui.View):
 
         if self.selected_budget:
             embed.add_field(name="選択中の予算", value=self.selected_budget)
-
         return embed
 
     async def update_message(self, interaction: discord.Interaction):
         submit_button = self.children[2]
         submit_button.disabled = not (self.items and self.selected_budget)
-        
         embed = self.create_embed()
         await interaction.response.edit_message(embed=embed, view=self)
     
@@ -224,27 +237,22 @@ class MultiItemRequestView(ui.View):
     async def submit_button(self, interaction: discord.Interaction, button: ui.Button):
         total_amount = sum(item['amount'] for item in self.items)
         current_budgets = guild_data[self.guild_id]["budgets"]
-        
         if total_amount > current_budgets.get(self.selected_budget, 0):
             await interaction.response.send_message(f"⚠️ **エラー:** 予算「{self.selected_budget}」が不足しています。(残高: ¥{current_budgets.get(self.selected_budget, 0):,})", ephemeral=True)
             return
         
         final_embed = discord.Embed(title="購入申請", color=discord.Color.gold())
         final_embed.set_author(name=f"申請者: {self.author.display_name}", icon_url=self.author.display_avatar)
-        
         description = ""
         for i, item in enumerate(self.items, 1):
             description += f"**{i}. {item['name']}** - ¥{item['amount']:,}\n"
             if item['link']:
                 description += f"   [リンク]({item['link']})\n"
         final_embed.description = description
-        
         final_embed.add_field(name="💰 合計金額", value=f"**¥{total_amount:,}**", inline=True)
         final_embed.add_field(name="🧾 予算項目", value=self.selected_budget, inline=True)
         final_embed.set_footer(text="ステータス: 審査中")
-
         await interaction.message.delete()
-        
         approval_view = ApprovalView(author=self.author, items=self.items, budget_name=self.selected_budget, guild_id=self.guild_id)
         await interaction.channel.send(embed=final_embed, view=approval_view)
 
@@ -281,7 +289,6 @@ class PartialApprovalView(ui.View):
                 approved_items.append(item)
             else:
                 rejected_items.append(item)
-        
         await self.original_view.finalize_approval(interaction, approved_items, rejected_items)
 
 class ApprovalView(ui.View):
@@ -291,20 +298,10 @@ class ApprovalView(ui.View):
         self.items = items
         self.budget_name = budget_name
         self.guild_id = guild_id
-        self.total_amount = sum(item['amount'] for item in items)
     
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # ★ 変更点: サーバーごとに設定されたロールIDで権限をチェック
-        member = interaction.user
-        load_guild_data(self.guild_id)
-        accounting_role_id = guild_data[self.guild_id].get("accounting_role_id")
-
-        if not accounting_role_id:
-            await interaction.response.send_message("⚠️ 審査用の会計ロールが設定されていません。管理者に設定を依頼してください。", ephemeral=True)
-            return False
-
-        has_role = any(role.id == accounting_role_id for role in member.roles)
-        if not has_role:
+        # ★ 変更点: 共通の権限チェック関数を呼び出す
+        if not has_accounting_role(interaction.user):
             await interaction.response.send_message("⚠️ この申請を審査する権限がありません。", ephemeral=True)
             return False
         return True
@@ -312,7 +309,6 @@ class ApprovalView(ui.View):
     async def finalize_approval(self, interaction: discord.Interaction, approved_items: list, rejected_items: list):
         approver = interaction.user
         approved_amount = sum(item['amount'] for item in approved_items)
-
         load_guild_data(self.guild_id)
         current_budgets = guild_data[self.guild_id]["budgets"]
 
@@ -344,7 +340,6 @@ class ApprovalView(ui.View):
         final_embed.set_footer(text=footer_text)
 
         save_review_result_partial(self.guild_id, self.author.display_name, self.budget_name, approver.display_name, approved_items, rejected_items)
-        
         await interaction.response.edit_message(embed=final_embed, view=None)
 
     @ui.button(label="一括承認", style=discord.ButtonStyle.success)
@@ -366,17 +361,17 @@ class ApprovalView(ui.View):
 async def is_in_registered_channel(ctx: commands.Context):
     if not ctx.guild:
         return False
-
     load_guild_data(ctx.guild.id)
     registered_channels = guild_data[ctx.guild.id]["channels"]
-
-    management_commands = ["register_channel", "unregister_channel", "list_channels", "set_accounting_role", "get_accounting_role"]
+    # ★ 変更点: 新しいロール管理コマンドをチェック対象に追加
+    management_commands = [
+        "register_channel", "unregister_channel", "list_channels", 
+        "add_accounting_role", "remove_accounting_role", "list_accounting_roles"
+    ]
     if ctx.command and ctx.command.name in management_commands:
         return True
-    
     if not registered_channels:
         return True
-    
     return ctx.channel.id in registered_channels
     
 @bot.event
@@ -384,7 +379,7 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
         return
     if isinstance(error, commands.MissingPermissions):
-        await ctx.send("⚠️ このコマンドを実行する管理者権限がありません。", ephemeral=True)
+        await ctx.send("⚠️ このコマンドを実行する管理者権限がありません。")
     elif isinstance(error, commands.CommandNotFound):
         pass
     else:
@@ -401,50 +396,77 @@ async def on_ready():
     print("---------------------------------")
     print("📢 全サーバーのデータをロードしました。")
 
-# --- Management Commands (Channels & Roles) ---
+# --- Management Commands (Roles & Channels) ---
 
 # ★★★ 新しい会計ロール管理コマンド ★★★
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def set_accounting_role(ctx, role: discord.Role):
-    """【管理者用】予算の追加や申請の承認ができる会計ロールを設定します。"""
+async def add_accounting_role(ctx, role: discord.Role):
+    """【管理者用】このサーバーで会計権限を持つロールを追加します。"""
     guild_id = ctx.guild.id
     load_guild_data(guild_id)
     
-    guild_data[guild_id]["accounting_role_id"] = role.id
+    if role.id in guild_data[guild_id]["additional_roles"]:
+        await ctx.send(f"✅ ロール {role.mention} は既に登録されています。")
+        return
+        
+    guild_data[guild_id]["additional_roles"].add(role.id)
     save_settings(guild_id)
-    
-    await ctx.send(f"✅ 会計ロールを「{role.mention}」に設定しました。")
+    await ctx.send(f"✅ 会計ロールとして {role.mention} を追加しました。")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def get_accounting_role(ctx):
-    """【管理者用】現在設定されている会計ロールを表示します。"""
+async def remove_accounting_role(ctx, role: discord.Role):
+    """【管理者用】サーバーに追加された会計ロールを削除します。"""
+    guild_id = ctx.guild.id
+    load_guild_data(guild_id)
+
+    if role.id not in guild_data[guild_id]["additional_roles"]:
+        await ctx.send(f"ℹ️ ロール {role.mention} はこのサーバーの会計ロールとして登録されていません。")
+        return
+
+    guild_data[guild_id]["additional_roles"].discard(role.id)
+    save_settings(guild_id)
+    await ctx.send(f"✅ 会計ロール {role.mention} を削除しました。")
+
+@bot.command()
+async def list_accounting_roles(ctx):
+    """現在有効な会計ロールの一覧を表示します。"""
     guild_id = ctx.guild.id
     load_guild_data(guild_id)
     
-    role_id = guild_data[guild_id].get("accounting_role_id")
-    if role_id:
-        role = ctx.guild.get_role(role_id)
-        if role:
-            await ctx.send(f"現在の会計ロールは {role.mention} です。")
-        else:
-            await ctx.send(f"ℹ️ 会計ロールは設定されていますが、ロールが見つかりませんでした (ID: {role_id})。削除された可能性があります。")
-    else:
-        await ctx.send("現在、会計ロールは設定されていません。")
+    embed = discord.Embed(title="🔒 会計権限を持つロール一覧", color=discord.Color.dark_green())
+    
+    # 共通ロール
+    common_role_str = "未設定"
+    if ALLOWED_ROLE_ID:
+        role = ctx.guild.get_role(ALLOWED_ROLE_ID)
+        common_role_str = role.mention if role else f"不明なロール (ID: {ALLOWED_ROLE_ID})"
+    embed.add_field(name="共通ロール (config.jsonで指定)", value=common_role_str, inline=False)
+    
+    # サーバー追加ロール
+    server_roles = guild_data[guild_id].get("additional_roles", set())
+    server_roles_str = "なし"
+    if server_roles:
+        role_mentions = []
+        for role_id in server_roles:
+            role = ctx.guild.get_role(role_id)
+            role_mentions.append(role.mention if role else f"不明なロール (ID: {role_id})")
+        server_roles_str = "\n".join(role_mentions)
+    embed.add_field(name="このサーバーで追加されたロール", value=server_roles_str, inline=False)
+    
+    await ctx.send(embed=embed)
+
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def register_channel(ctx, channel: discord.TextChannel = None):
-    """【管理者用】Botが反応するチャンネルを登録します。"""
     target_channel = channel or ctx.channel
     guild_id = ctx.guild.id
     load_guild_data(guild_id)
-
     if target_channel.id in guild_data[guild_id]["channels"]:
-        await ctx.send(f"✅ チャンネル {target_channel.mention} は既に登録されています。", ephemeral=True)
+        await ctx.send(f"✅ チャンネル {target_channel.mention} は既に登録されています。")
         return
-
     guild_data[guild_id]["channels"].add(target_channel.id)
     save_channels(guild_id)
     await ctx.send(f"✅ チャンネル {target_channel.mention} を登録しました。")
@@ -452,15 +474,12 @@ async def register_channel(ctx, channel: discord.TextChannel = None):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def unregister_channel(ctx, channel: discord.TextChannel = None):
-    """【管理者用】チャンネルの登録を解除します。"""
     target_channel = channel or ctx.channel
     guild_id = ctx.guild.id
     load_guild_data(guild_id)
-
     if target_channel.id not in guild_data[guild_id]["channels"]:
-        await ctx.send(f"ℹ️ チャンネル {target_channel.mention} は登録されていません。", ephemeral=True)
+        await ctx.send(f"ℹ️ チャンネル {target_channel.mention} は登録されていません。")
         return
-
     guild_data[guild_id]["channels"].discard(target_channel.id)
     save_channels(guild_id)
     await ctx.send(f"✅ チャンネル {target_channel.mention} の登録を解除しました。")
@@ -468,15 +487,12 @@ async def unregister_channel(ctx, channel: discord.TextChannel = None):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def list_channels(ctx):
-    """【管理者用】登録されているチャンネルの一覧を表示します。"""
     guild_id = ctx.guild.id
     load_guild_data(guild_id)
-    
     registered_channels = guild_data[guild_id]["channels"]
     if not registered_channels:
         await ctx.send("現在、このサーバーで登録されているチャンネルはありません。")
         return
-    
     embed = discord.Embed(title="📢 登録済みチャンネル一覧", color=discord.Color.blue())
     channel_links = [f"<#{channel_id}>" for channel_id in registered_channels]
     embed.description = "\n".join(channel_links)
@@ -487,11 +503,10 @@ async def list_channels(ctx):
 
 @bot.command()
 async def request(ctx):
-    """購入申請のUIを呼び出します。"""
     guild_id = ctx.guild.id
     load_guild_data(guild_id)
     if not guild_data[guild_id]["budgets"]:
-        await ctx.send("現在、このサーバーで登録されている予算はありません。管理者に予算の追加を依頼してください。")
+        await ctx.send("現在、このサーバーで登録されている予算はありません。")
         return
     view = MultiItemRequestView(author=ctx.author, guild_id=guild_id)
     embed = view.create_embed()
@@ -499,51 +514,34 @@ async def request(ctx):
     
 @bot.command()
 async def budget(ctx):
-    """現在の全予算の状況を表示します。"""
     guild_id = ctx.guild.id
     load_guild_data(guild_id)
-    
     current_budgets = guild_data[guild_id]["budgets"]
     if not current_budgets:
         await ctx.send("現在、このサーバーで登録されている予算はありません。")
         return
-    
     embed = discord.Embed(title="💰 現在の予算状況", color=discord.Color.gold())
     for name, amount in current_budgets.items():
         embed.add_field(name=name, value=f"¥{amount:,}", inline=False)
-    
     await ctx.send(embed=embed)
 
-# ★ 変更点: @commands.has_role() を削除し、コマンド内で手動チェック
 @bot.command()
 async def add_budget(ctx, name: str, amount: int):
     """【会計ロール用】予算を追加・補充します。"""
-    guild_id = ctx.guild.id
-    load_guild_data(guild_id)
-
-    # --- 手動でロールチェック ---
-    accounting_role_id = guild_data[guild_id].get("accounting_role_id")
-    if not accounting_role_id:
-        await ctx.send("⚠️ 会計ロールが設定されていません。管理者が `!set_accounting_role` で設定してください。")
-        return
-    
-    member = ctx.author
-    has_role = any(role.id == accounting_role_id for role in member.roles)
-    if not has_role:
+    # ★ 変更点: 共通の権限チェック関数を呼び出す
+    if not has_accounting_role(ctx.author):
         await ctx.send("⚠️ このコマンドを実行する権限がありません。")
         return
-    # --- ここまで ---
-
+        
+    guild_id = ctx.guild.id
+    load_guild_data(guild_id)
     current_budgets = guild_data[guild_id]["budgets"]
     current_budgets[name] = current_budgets.get(name, 0) + amount
     save_budgets(guild_id)
     await ctx.send(f"✅ 予算「{name}」に ¥{amount:,} を追加しました。現在の残高: ¥{current_budgets[name]:,}")
     
-# add_budget_error は手動チェックになったため不要
-    
 @bot.command()
 async def send(ctx, applicant: str, item: str, link: str, amount: int, budget_name: str):
-    """【引数指定用】購入申請を作成します。"""
     guild_id = ctx.guild.id
     load_guild_data(guild_id)
     current_budgets = guild_data[guild_id]["budgets"]
@@ -557,7 +555,6 @@ async def send(ctx, applicant: str, item: str, link: str, amount: int, budget_na
         return
 
     embed = discord.Embed(title="購入申請", color=discord.Color.gold())
-    # 申請者名を指定できるようにしつつ、アイコンはコマンド実行者にする
     embed.set_author(name=f"申請者: {applicant}", icon_url=ctx.author.display_avatar)
     embed.add_field(name="購入物", value=item, inline=False)
     embed.add_field(name="リンク", value=link, inline=False)
@@ -565,15 +562,8 @@ async def send(ctx, applicant: str, item: str, link: str, amount: int, budget_na
     embed.add_field(name="🧾 予算項目", value=budget_name, inline=True)
     embed.set_footer(text="ステータス: 審査中")
 
-    # authorをUserオブジェクトとして渡す必要があるため、ctx.authorを使用
-    # 実際の申請者名はEmbedに表示されているので、これで問題ない
     items = [{"name": item, "link": link, "amount": amount}]
-    approval_view = ApprovalView(
-        author=ctx.author,
-        items=items,
-        budget_name=budget_name,
-        guild_id=guild_id
-    )
+    approval_view = ApprovalView(author=ctx.author, items=items, budget_name=budget_name, guild_id=guild_id)
     await ctx.send(embed=embed, view=approval_view)
 
 # --- Run the Bot ---
