@@ -20,7 +20,7 @@ with open("config.json", "r", encoding="utf-8") as config_file:
 
 TOKEN = config["TOKEN"]
 # ★ 変更点: config.jsonからの共通ロールID読み込みを維持
-ALLOWED_ROLE_ID = config.get("ALLOWED_ROLE_ID") 
+ALLOWED_ROLE_ID = config.get("ALLOWED_ROLE_ID")
 
 ### ▼▼▼ ファイル設定 ▼▼▼
 DATA_DIR = "data"
@@ -237,9 +237,12 @@ class MultiItemRequestView(ui.View):
     async def submit_button(self, interaction: discord.Interaction, button: ui.Button):
         total_amount = sum(item['amount'] for item in self.items)
         current_budgets = guild_data[self.guild_id]["budgets"]
-        if total_amount > current_budgets.get(self.selected_budget, 0):
-            await interaction.response.send_message(f"⚠️ **エラー:** 予算「{self.selected_budget}」が不足しています。(残高: ¥{current_budgets.get(self.selected_budget, 0):,})", ephemeral=True)
-            return
+        
+        ### ▼ 変更点 ▼ ###
+        # 予算不足でも申請できるように、以下のチェックをコメントアウト
+        # if total_amount > current_budgets.get(self.selected_budget, 0):
+        #     await interaction.response.send_message(f"⚠️ **エラー:** 予算「{self.selected_budget}」が不足しています。(残高: ¥{current_budgets.get(self.selected_budget, 0):,})", ephemeral=True)
+        #     return
         
         final_embed = discord.Embed(title="購入申請", color=discord.Color.gold())
         final_embed.set_author(name=f"申請者: {self.author.display_name}", icon_url=self.author.display_avatar)
@@ -312,9 +315,9 @@ class ApprovalView(ui.View):
         load_guild_data(self.guild_id)
         current_budgets = guild_data[self.guild_id]["budgets"]
 
-        if approved_amount > current_budgets.get(self.budget_name, 0):
-            await interaction.response.send_message(f"⚠️ **エラー:** 承認額 (¥{approved_amount:,}) が予算「{self.budget_name}」の残高を超えています。", ephemeral=True)
-            return
+        #if approved_amount > current_budgets.get(self.budget_name, 0):
+            #await interaction.response.send_message(f"⚠️ **エラー:** 承認額 (¥{approved_amount:,}) が予算「{self.budget_name}」の残高を超えています。", ephemeral=True)
+            #return
 
         if approved_amount > 0:
             current_budgets[self.budget_name] -= approved_amount
@@ -549,10 +552,12 @@ async def send(ctx, applicant: str, item: str, link: str, amount: int, budget_na
     if budget_name not in current_budgets:
         await ctx.send(f"⚠️ **エラー:** 予算項目「{budget_name}」は存在しません。")
         return
-        
-    if amount > current_budgets[budget_name]:
-        await ctx.send(f"⚠️ **エラー:** 予算「{budget_name}」が不足しています。(残高: ¥{current_budgets[budget_name]:,})")
-        return
+     
+    ### ▼ 変更点 ▼ ###
+    # 予算不足でも申請できるように、以下のチェックをコメントアウト
+    #if amount > current_budgets[budget_name]:
+        #await ctx.send(f"⚠️ **エラー:** 予算「{budget_name}」が不足しています。(残高: ¥{current_budgets[budget_name]:,})")
+        #return
 
     embed = discord.Embed(title="購入申請", color=discord.Color.gold())
     embed.set_author(name=f"申請者: {applicant}", icon_url=ctx.author.display_avatar)
