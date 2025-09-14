@@ -571,6 +571,34 @@ async def send(ctx, applicant: str, item: str, link: str, amount: int, budget_na
     approval_view = ApprovalView(author=ctx.author, items=items, budget_name=budget_name, guild_id=guild_id)
     await ctx.send(embed=embed, view=approval_view)
 
+@bot.command()
+async def export_csv(ctx):
+    """【会計ロール用】これまでの申請・審査結果をCSVファイルで出力します。"""
+    # コマンド実行者が会計ロールを持っているかチェック
+    if not has_accounting_role(ctx.author):
+        await ctx.send("⚠️ このコマンドを実行する権限がありません。")
+        return
+
+    guild_id = ctx.guild.id
+    # サーバー固有のデータパスを取得
+    guild_path = get_guild_data_path(guild_id)
+    log_file_path = os.path.join(guild_path, REVIEW_LOG_FILE)
+
+    # ログファイルの存在を確認
+    if not os.path.exists(log_file_path):
+        await ctx.send("ℹ️ まだ審査記録がありません。CSVファイルは作成されていません。")
+        return
+
+    try:
+        # ファイルをDiscordのチャットに送信
+        await ctx.send(
+            content=f"📄 {ctx.guild.name} の申請・審査記録です。",
+            file=discord.File(log_file_path, "review_results.csv")
+        )
+    except Exception as e:
+        await ctx.send(f"⚠️ ファイルの送信中にエラーが発生しました: {e}")
+        print(f"Error sending CSV file for guild {guild_id}: {e}")
+
 # --- Run the Bot ---
 if __name__ == "__main__":
     bot.run(TOKEN)
